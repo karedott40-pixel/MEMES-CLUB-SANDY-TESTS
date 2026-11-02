@@ -1,0 +1,63 @@
+name: Sandy - compilation Solana SBF sans deploiement
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: sandy-sbf
+  cancel-in-progress: true
+jobs:
+  compile-sbf:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      CARGO_BUILD_JOBS: "2"
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Verifier et extraire les sources
+        run: |
+          python3 - <<'PYCODE'
+          import hashlib, pathlib, stat, zipfile
+          archive = pathlib.Path("SANDY_SAFETY_V2.zip")
+          if hashlib.sha256(archive.read_bytes()).hexdigest() != "70b1a84561cb578451df322fe7643e0be4213cd45aa8b954e36b5edab4256f42":
+              raise SystemExit("Empreinte de l'archive incorrecte")
+          with zipfile.ZipFile(archive) as handle:
+              for entry in handle.infolist():
+                  path = pathlib.PurePosixPath(entry.filename)
+                  if path.is_absolute() or ".." in path.parts or path.parts[0] != "sandy-safety-v2" or stat.S_ISLNK(entry.external_attr >> 16) or entry.file_size > 2000000:
+                      raise SystemExit("Entree d'archive refusee")
+              handle.extractall(".")
+          PYCODE
+          cd sandy-safety-v2
+          sha256sum -c SOURCE_SHA256SUMS
+      - name: Telecharger uniquement les outils officiels Agave 2.0.8
+        shell: bash
+        run: |
+          curl --fail --location --proto '=https' --proto-redir '=https' --max-time 180 --output "$RUNNER_TEMP/agave.tar.bz2" 'https://github.com/anza-xyz/agave/releases/download/v2.0.8/solana-release-x86_64-unknown-linux-gnu.tar.bz2'
+          sha256sum "$RUNNER_TEMP/agave.tar.bz2"
+          mkdir "$RUNNER_TEMP/agave"
+          tar --extract --bzip2 --file "$RUNNER_TEMP/agave.tar.bz2" --directory "$RUNNER_TEMP/agave" --no-same-owner
+          "$RUNNER_TEMP/agave/solana-release/bin/cargo-build-sbf" --version
+      - name: Compiler le programme dans le format Solana
+        working-directory: sandy-safety-v2
+        shell: bash
+        run: |
+          set -o pipefail
+          "$RUNNER_TEMP/agave/solana-release/bin/cargo-build-sbf" --manifest-path program/Cargo.toml --sbf-out-dir "$RUNNER_TEMP/sbf-out" -- --locked 2>&1 | tee "$RUNNER_TEMP/sbf-build.log"
+          python3 - <<'PYCODE'
+          import os,pathlib,re,hashlib
+          log=pathlib.Path(os.environ['RUNNER_TEMP'],'sbf-build.log').read_text()
+          if re.search(r'Stack offset.*exceeded|stack frame.*exceeded|undefined symbol',log,re.I):
+              raise SystemExit('Diagnostic SBF incompatible avec une validation')
+          binary=pathlib.Path(os.environ['RUNNER_TEMP'],'sbf-out/sandy_program.so')
+          data=binary.read_bytes()
+          if data[:4]!=b'\x7fELF':
+              raise SystemExit('Programme ELF absent')
+          print('SBF_PROGRAM_SHA256='+hashlib.sha256(data).hexdigest())
+          print('SBF_PROGRAM_BYTES='+str(len(data)))
+          print('DEPLOYED=false; RPC_USED=false; FUNDS=0')
+          PYCODE
+          file "$RUNNER_TEMP/sbf-out/sandy_program.so"
+# No validator, deployment, RPC requests, wallet import, cache or artifact upload.
