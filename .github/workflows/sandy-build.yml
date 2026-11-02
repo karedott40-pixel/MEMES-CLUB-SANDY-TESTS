@@ -1,0 +1,58 @@
+name: Sandy - construction sans portefeuille
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: sandy-build
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Extract verified test sources
+        run: |
+          python3 - <<'PYCODE'
+          import hashlib, pathlib, zipfile
+          archive = pathlib.Path("SANDY_TEST_SOURCES.zip")
+          if hashlib.sha256(archive.read_bytes()).hexdigest() != "d1f55d1120b2397af366bbe03f24df43d1732deae18e43e8a8e0417618dbb658":
+              raise SystemExit("Test source archive checksum mismatch")
+          with zipfile.ZipFile(archive) as handle:
+              handle.extractall(".")
+          PYCODE
+      - name: Outils officiels figes
+        run: rustup toolchain install 1.82.0 --profile minimal --no-self-update
+      - name: Huit tests du calcul corrige
+        working-directory: experiments/sandy_math
+        run: |
+          rustc +1.82.0 --edition=2021 --test tests.rs -o "$RUNNER_TEMP/sandy-math-tests"
+          "$RUNNER_TEMP/sandy-math-tests"
+      - name: Source amont figee et verifiee
+        shell: bash
+        run: |
+          curl --fail --location --proto '=https' --proto-redir '=https' --max-time 90 --output "$RUNNER_TEMP/sandy.tar.gz" 'https://codeload.github.com/iq/sandy/tar.gz/b3dacdff5ec851c4bcc98af89ceff8b227c5c19a'
+          ARCHIVE="$RUNNER_TEMP/sandy.tar.gz" python3 - <<'PY'
+          import hashlib, os, pathlib, tarfile
+          archive = pathlib.Path(os.environ["ARCHIVE"])
+          expected = "b5601f211f470b53b027e5a1a98461a06297874d86aaa8d18411ab0a238e74c5"
+          if hashlib.sha256(archive.read_bytes()).hexdigest() != expected:
+              raise SystemExit("Empreinte amont incorrecte")
+          destination = pathlib.Path(os.environ["RUNNER_TEMP"]) / "sandy-source"
+          destination.mkdir()
+          with tarfile.open(archive) as handle:
+              handle.extractall(destination, filter="data")
+          PY
+          cp experiments/sandy_math/math_fixed.rs "$RUNNER_TEMP/sandy-source/sandy-b3dacdff5ec851c4bcc98af89ceff8b227c5c19a/program/src/math.rs"
+      - name: Construction uniquement - aucun lancement du bot
+        shell: bash
+        env:
+          CARGO_BUILD_JOBS: "2"
+          CARGO_TARGET_DIR: ${{ runner.temp }}/sandy-target
+        run: cargo +1.82.0 build --locked --workspace --manifest-path "$RUNNER_TEMP/sandy-source/sandy-b3dacdff5ec851c4bcc98af89ceff8b227c5c19a/Cargo.toml"
+# No cache, artifact upload, wallet, RPC setting, secret, bot execution or deployment.
+# Keep this file disabled in the private audit repository.
+
