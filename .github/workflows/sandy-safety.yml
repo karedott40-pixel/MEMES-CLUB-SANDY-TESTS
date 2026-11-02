@@ -12,7 +12,7 @@ jobs:
     timeout-minutes: 20
     env:
       CARGO_BUILD_JOBS: "2"
-      CARGO_TARGET_DIR: ${{ runner.temp }}/sandy-safety-target
+      CARGO_TARGET_DIR: target
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
