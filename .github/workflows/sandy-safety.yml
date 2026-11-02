@@ -1,0 +1,50 @@
+name: Sandy - protections et tests hors ligne
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: sandy-safety
+  cancel-in-progress: true
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      CARGO_BUILD_JOBS: "2"
+      CARGO_TARGET_DIR: ${{ runner.temp }}/sandy-safety-target
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Verifier et extraire les sources
+        run: |
+          python3 - <<'PYCODE'
+          import hashlib, pathlib, stat, zipfile
+          archive = pathlib.Path("SANDY_SAFETY_V2.zip")
+          if hashlib.sha256(archive.read_bytes()).hexdigest() != "70b1a84561cb578451df322fe7643e0be4213cd45aa8b954e36b5edab4256f42":
+              raise SystemExit("Empreinte de l'archive incorrecte")
+          with zipfile.ZipFile(archive) as handle:
+              for entry in handle.infolist():
+                  path = pathlib.PurePosixPath(entry.filename)
+                  if path.is_absolute() or ".." in path.parts or path.parts[0] != "sandy-safety-v2" or stat.S_ISLNK(entry.external_attr >> 16) or entry.file_size > 2000000:
+                      raise SystemExit("Entree d'archive refusee")
+              handle.extractall(".")
+          PYCODE
+          cd sandy-safety-v2
+          sha256sum -c SOURCE_SHA256SUMS
+      - name: Outils officiels figes
+        run: rustup toolchain install 1.82.0 --profile minimal --no-self-update
+      - name: Tests Rust - plafonds configuration journal et programme
+        working-directory: sandy-safety-v2
+        run: cargo +1.82.0 test --locked --workspace --all-targets
+      - name: Construire le profil hors ligne
+        working-directory: sandy-safety-v2
+        run: cargo +1.82.0 build --locked --workspace
+      - name: Tests comportementaux - aucun portefeuille ni RPC externe
+        working-directory: sandy-safety-v2
+        run: |
+          python3 scripts/test_entrypoints.py "$CARGO_TARGET_DIR/debug/sandy-bot"
+          node --test scripts/safety.test.js
+          "$CARGO_TARGET_DIR/debug/sandy-bot" --check-config config.example.json
+# Manual workflow only. No deployment, secrets, wallet files, cache or paid runner.
