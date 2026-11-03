@@ -22,22 +22,22 @@ jobs:
         run: |
           python3 - <<'PYCODE'
           import hashlib,pathlib,zipfile,stat,json
-          archive=pathlib.Path('SANDY_RUNTIME_V1.zip')
-          expected=pathlib.Path('SANDY_RUNTIME_V1.sha256').read_text().strip()
+          archive=pathlib.Path('SANDY_RUNTIME_V2.zip')
+          expected=pathlib.Path('SANDY_RUNTIME_V2.sha256').read_text().strip()
           assert len(expected)==64 and hashlib.sha256(archive.read_bytes()).hexdigest()==expected
           print('RUNTIME_ARCHIVE_SHA256='+expected)
           with zipfile.ZipFile(archive) as z:
               for entry in z.infolist():
                   p=pathlib.PurePosixPath(entry.filename)
-                  assert not p.is_absolute() and '..' not in p.parts and p.parts[0]=='sandy-runtime-v1'
+                  assert not p.is_absolute() and '..' not in p.parts and p.parts[0]=='sandy-runtime-v2'
                   assert not stat.S_ISLNK(entry.external_attr>>16) and entry.file_size<2000000
               z.extractall('.')
-          for name,row in json.loads(pathlib.Path('sandy-runtime-v1/MANIFEST.json').read_text()).items():
-              data=pathlib.Path('sandy-runtime-v1',name).read_bytes()
+          for name,row in json.loads(pathlib.Path('sandy-runtime-v2/MANIFEST.json').read_text()).items():
+              data=pathlib.Path('sandy-runtime-v2',name).read_bytes()
               assert len(data)==row['size_bytes'] and hashlib.sha256(data).hexdigest()==row['sha256']
           PYCODE
           curl --fail --location --proto '=https' --proto-redir '=https' --max-time 90 --output "$RUNNER_TEMP/raydium.tar.gz" 'https://codeload.github.com/raydium-io/raydium-amm/tar.gz/d8e88250a648cff370d588acb91db7c4ff72b52b'
-          python3 sandy-runtime-v1/prepare_sources.py
+          python3 sandy-runtime-v2/prepare_sources.py
       - name: Outils officiels Agave figes et verifies
         shell: bash
         run: |
@@ -51,14 +51,19 @@ jobs:
           tar --extract --bzip2 --file "$RUNNER_TEMP/agave.tar.bz2" --directory "$RUNNER_TEMP/agave" --no-same-owner
           rustup toolchain install 1.82.0 --profile minimal --no-self-update
       - name: Compiler le banc d'essai avec les dependances verrouillees
-        working-directory: sandy-safety-v2
-        run: cargo +1.82.0 build --locked -p sandy-bot --bin runtime_checks
+        working-directory: sandy-safety-v3
+        run: |
+          cargo +1.82.0 test --locked -p sandy-bot --bin sandy-bot
+          cargo +1.82.0 test --locked -p sandy-program --lib
+          cargo +1.82.0 build --locked -p sandy-bot --bins
+          python3 scripts/test_entrypoints.py target/debug/sandy-bot
+          node --test scripts/safety.test.js
       - name: Compiler Sandy et Raydium dans le format Solana
         shell: bash
         run: |
           set -o pipefail
-          "$RUNNER_TEMP/agave/solana-release/bin/cargo-build-sbf" --manifest-path sandy-safety-v2/program/Cargo.toml --sbf-out-dir "$RUNNER_TEMP/sbf-out" -- --locked 2>&1 | tee "$RUNNER_TEMP/sandy-build.log"
-          "$RUNNER_TEMP/agave/solana-release/bin/cargo-build-sbf" --manifest-path "$RUNNER_TEMP/raydium-source/program/Cargo.toml" --sbf-out-dir "$RUNNER_TEMP/sbf-out" -- --locked 2>&1 | tee "$RUNNER_TEMP/raydium-build.log"
+          "$RUNNER_TEMP/agave/solana-release/bin/cargo-build-sbf" --manifest-path sandy-safety-v3/program/Cargo.toml --sbf-out-dir "$RUNNER_TEMP/sbf-out" -- --locked 2>&1 | tee "$RUNNER_TEMP/sandy-build.log"
+          "$RUNNER_TEMP/agave/solana-release/bin/cargo-build-sbf" --manifest-path "$RUNNER_TEMP/raydium-source/program/Cargo.toml" --tools-version v1.37 --sbf-out-dir "$RUNNER_TEMP/sbf-out" -- --locked 2>&1 | tee "$RUNNER_TEMP/raydium-build.log"
           python3 - <<'PYCODE'
           import hashlib,os,pathlib,re
           root=pathlib.Path(os.environ['RUNNER_TEMP'])
@@ -74,7 +79,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          MC_RUNTIME_BIN="$GITHUB_WORKSPACE/sandy-safety-v2/target/debug/runtime_checks"
+          MC_RUNTIME_BIN="$GITHUB_WORKSPACE/sandy-safety-v3/target/debug/runtime_checks"
           sudo --preserve-env=RUNNER_TEMP,GITHUB_ACTIONS unshare --net --fork bash -euc '
             ip link set lo up
             echo NETWORK_INTERFACES
