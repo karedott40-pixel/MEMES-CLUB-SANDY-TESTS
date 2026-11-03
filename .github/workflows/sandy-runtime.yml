@@ -23,7 +23,9 @@ jobs:
           python3 - <<'PYCODE'
           import hashlib,pathlib,zipfile,stat,json
           archive=pathlib.Path('SANDY_RUNTIME_V1.zip')
-          assert hashlib.sha256(archive.read_bytes()).hexdigest()=='ef73c3b9feacfa511eb0755d9bc2d112b07487d6d81a89cb4503dff96b279f89'
+          expected=pathlib.Path('SANDY_RUNTIME_V1.sha256').read_text().strip()
+          assert len(expected)==64 and hashlib.sha256(archive.read_bytes()).hexdigest()==expected
+          print('RUNTIME_ARCHIVE_SHA256='+expected)
           with zipfile.ZipFile(archive) as z:
               for entry in z.infolist():
                   p=pathlib.PurePosixPath(entry.filename)
