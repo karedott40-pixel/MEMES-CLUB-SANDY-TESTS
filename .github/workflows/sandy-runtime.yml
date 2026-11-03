@@ -1,0 +1,92 @@
+name: Sandy - echanges locaux sans fonds reels
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: sandy-runtime
+  cancel-in-progress: true
+jobs:
+  controlled-local-runtime:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      CARGO_BUILD_JOBS: "2"
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Verifier le banc d'essai et les sources officielles
+        shell: bash
+        run: |
+          python3 - <<'PYCODE'
+          import hashlib,pathlib,zipfile,stat,json
+          archive=pathlib.Path('SANDY_RUNTIME_V1.zip')
+          assert hashlib.sha256(archive.read_bytes()).hexdigest()=='ef73c3b9feacfa511eb0755d9bc2d112b07487d6d81a89cb4503dff96b279f89'
+          with zipfile.ZipFile(archive) as z:
+              for entry in z.infolist():
+                  p=pathlib.PurePosixPath(entry.filename)
+                  assert not p.is_absolute() and '..' not in p.parts and p.parts[0]=='sandy-runtime-v1'
+                  assert not stat.S_ISLNK(entry.external_attr>>16) and entry.file_size<2000000
+              z.extractall('.')
+          for name,row in json.loads(pathlib.Path('sandy-runtime-v1/MANIFEST.json').read_text()).items():
+              data=pathlib.Path('sandy-runtime-v1',name).read_bytes()
+              assert len(data)==row['size_bytes'] and hashlib.sha256(data).hexdigest()==row['sha256']
+          PYCODE
+          curl --fail --location --proto '=https' --proto-redir '=https' --max-time 90 --output "$RUNNER_TEMP/raydium.tar.gz" 'https://codeload.github.com/raydium-io/raydium-amm/tar.gz/d8e88250a648cff370d588acb91db7c4ff72b52b'
+          python3 sandy-runtime-v1/prepare_sources.py
+      - name: Outils officiels Agave figes et verifies
+        shell: bash
+        run: |
+          curl --fail --location --proto '=https' --proto-redir '=https' --max-time 180 --output "$RUNNER_TEMP/agave.tar.bz2" 'https://github.com/anza-xyz/agave/releases/download/v2.0.8/solana-release-x86_64-unknown-linux-gnu.tar.bz2'
+          python3 - <<'PYCODE'
+          import os,pathlib,hashlib
+          p=pathlib.Path(os.environ['RUNNER_TEMP'],'agave.tar.bz2')
+          assert hashlib.sha256(p.read_bytes()).hexdigest()=='1f54e70e66cef3692dd2182869f69155b5d1652c3d96336445e2bc7a87be041a'
+          PYCODE
+          mkdir "$RUNNER_TEMP/agave"
+          tar --extract --bzip2 --file "$RUNNER_TEMP/agave.tar.bz2" --directory "$RUNNER_TEMP/agave" --no-same-owner
+          rustup toolchain install 1.82.0 --profile minimal --no-self-update
+      - name: Compiler le banc d'essai avec les dependances verrouillees
+        working-directory: sandy-safety-v2
+        run: cargo +1.82.0 build --locked -p sandy-bot --bin runtime_checks
+      - name: Compiler Sandy et Raydium dans le format Solana
+        shell: bash
+        run: |
+          set -o pipefail
+          "$RUNNER_TEMP/agave/solana-release/bin/cargo-build-sbf" --manifest-path sandy-safety-v2/program/Cargo.toml --sbf-out-dir "$RUNNER_TEMP/sbf-out" -- --locked 2>&1 | tee "$RUNNER_TEMP/sandy-build.log"
+          "$RUNNER_TEMP/agave/solana-release/bin/cargo-build-sbf" --manifest-path "$RUNNER_TEMP/raydium-source/program/Cargo.toml" --sbf-out-dir "$RUNNER_TEMP/sbf-out" -- --locked 2>&1 | tee "$RUNNER_TEMP/raydium-build.log"
+          python3 - <<'PYCODE'
+          import hashlib,os,pathlib,re
+          root=pathlib.Path(os.environ['RUNNER_TEMP'])
+          for name in ['sandy','raydium']:
+              log=root.joinpath(name+'-build.log').read_text()
+              assert not re.search(r'Stack offset.*exceeded|stack frame.*exceeded|undefined symbol',log,re.I),'SBF diagnostic: '+name
+          for name in ['sandy_program','raydium_amm']:
+              data=root.joinpath('sbf-out',name+'.so').read_bytes()
+              assert data[:4]==bytes([127,69,76,70])
+              print(name+'_SBF_SHA256='+hashlib.sha256(data).hexdigest())
+          PYCODE
+      - name: Executer les echanges dans un reseau local isole
+        shell: bash
+        run: |
+          set -o pipefail
+          MC_RUNTIME_BIN="$GITHUB_WORKSPACE/sandy-safety-v2/target/debug/runtime_checks"
+          sudo --preserve-env=RUNNER_TEMP,GITHUB_ACTIONS unshare --net --fork bash -euc '
+            ip link set lo up
+            echo NETWORK_INTERFACES
+            ip -j address
+            echo NETWORK_ROUTES
+            ip -j route
+            test "$(ip -o link show | wc -l)" -eq 1
+            test -z "$(ip route show default)"
+            timeout --signal=TERM --kill-after=5s 180s "$1" "$RUNNER_TEMP/agave/solana-release/bin/solana-test-validator" "$RUNNER_TEMP/sbf-out/sandy_program.so" "$RUNNER_TEMP/sbf-out/raydium_amm.so" "$RUNNER_TEMP/memes-club-local"
+          ' _ "$MC_RUNTIME_BIN" 2>&1 | tee "$RUNNER_TEMP/runtime-console.log"
+      - name: Afficher le diagnostic si une etape echoue
+        if: failure()
+        shell: bash
+        run: |
+          if test -f "$RUNNER_TEMP/memes-club-local/validator.log"; then tail -n 120 "$RUNNER_TEMP/memes-club-local/validator.log"; fi
+          if test -f "$RUNNER_TEMP/memes-club-local/runtime_result.json"; then cat "$RUNNER_TEMP/memes-club-local/runtime_result.json"; fi
+# Public standard runner, no secrets, cache or artifact upload. Only fresh local fictitious funds.
